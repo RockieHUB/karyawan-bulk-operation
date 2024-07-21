@@ -5,6 +5,7 @@ import {
   GridActionsCellItem,
   gridClasses,
 } from "@mui/x-data-grid";
+import { Snackbar, Alert } from "@mui/material";
 import Button from "@mui/material/Button";
 import DeleteIcon from "@mui/icons-material/Delete";
 import RestoreIcon from "@mui/icons-material/Restore";
@@ -16,6 +17,7 @@ import axios from "axios";
 
 export default function BulkEditing() {
   const apiRef = useGridApiRef();
+  const autosaveTimeout = React.useRef(null);
   const [rows, setRows] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [hasUnsavedRows, setHasUnsavedRows] = React.useState(false);
@@ -31,6 +33,7 @@ export default function BulkEditing() {
     fetchData();
   }, []);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const fetchData = async () => {
     try {
       const response = await axios.get(
@@ -79,60 +82,6 @@ export default function BulkEditing() {
       },
     ];
   }, [rows]);
-
-  const processRowUpdate = React.useCallback((newRow, oldRow) => {
-    const rowId = newRow.karyawanId;
-
-    setRows((prevRows) =>
-      prevRows.map((row) => (row.karyawanId === rowId ? newRow : row))
-    );
-
-    if (oldRow.isNew) {
-      unsavedChangesRef.current.newRows = unsavedChangesRef.current.newRows.map(
-        (row) => (row.karyawanId === rowId ? newRow : row)
-      );
-    } else {
-      unsavedChangesRef.current.unsavedRows[rowId] = newRow;
-      if (!unsavedChangesRef.current.rowsBeforeChange[rowId]) {
-        unsavedChangesRef.current.rowsBeforeChange[rowId] = oldRow;
-      }
-    }
-    setHasUnsavedRows(true);
-    return newRow;
-  }, []);
-
-  const [selectedForDeletion, setSelectedForDeletion] = React.useState([]);
-
-  const handleDeleteClick = (id) => {
-    unsavedChangesRef.current.deletedRows.push(id);
-    setHasUnsavedRows(true);
-    setRows((prevRows) =>
-      prevRows.map((row) =>
-        row.karyawanId === id ? { ...row, _action: "delete" } : row
-      )
-    );
-  };
-
-  const discardChanges = React.useCallback(() => {
-    setHasUnsavedRows(false);
-    Object.values(unsavedChangesRef.current.rowsBeforeChange).forEach((row) => {
-      apiRef.current.updateRows([row]);
-    });
-    unsavedChangesRef.current = {
-      unsavedRows: {},
-      rowsBeforeChange: {},
-      newRows: [],
-      deletedRows: [],
-    };
-    setRows((rows) =>
-      rows
-        .filter((row) => !row.isNew)
-        .map((row) => {
-          const { _action, ...rest } = row;
-          return rest;
-        })
-    );
-  }, [apiRef, rows]);
 
   const saveChanges = React.useCallback(async () => {
     try {
@@ -222,19 +171,82 @@ export default function BulkEditing() {
 
       setIsSaving(false);
       setHasUnsavedRows(false);
-      setSelectedForDeletion([]);
       unsavedChangesRef.current = {
         unsavedRows: {},
         rowsBeforeChange: {},
         newRows: [],
         deletedRows: [],
       };
+      setSnackbarOpen(true);
     } catch (error) {
       console.error("Error saving changes:", error);
       setIsSaving(false);
       // You might want to show an error message to the user here
     }
-  }, [fetchData, selectedForDeletion]);
+  }, [fetchData]);
+
+  const processRowUpdate = React.useCallback(
+    (newRow, oldRow) => {
+      const rowId = newRow.karyawanId;
+
+      setRows((prevRows) =>
+        prevRows.map((row) => (row.karyawanId === rowId ? newRow : row))
+      );
+
+      if (oldRow.isNew) {
+        unsavedChangesRef.current.newRows =
+          unsavedChangesRef.current.newRows.map((row) =>
+            row.karyawanId === rowId ? newRow : row
+          );
+      } else {
+        unsavedChangesRef.current.unsavedRows[rowId] = newRow;
+        if (!unsavedChangesRef.current.rowsBeforeChange[rowId]) {
+          unsavedChangesRef.current.rowsBeforeChange[rowId] = oldRow;
+        }
+      }
+      setHasUnsavedRows(true);
+      // Autosave Logic
+      clearTimeout(autosaveTimeout.current);
+      autosaveTimeout.current = setTimeout(() => {
+        console.log("Autosaving triggered");
+        saveChanges(); // Trigger the saveChanges function
+      }, 5000); // Autosave after 5 seconds of inactivity
+      return newRow;
+    },
+    [saveChanges]
+  );
+
+  const handleDeleteClick = (id) => {
+    unsavedChangesRef.current.deletedRows.push(id);
+    setHasUnsavedRows(true);
+    setRows((prevRows) =>
+      prevRows.map((row) =>
+        row.karyawanId === id ? { ...row, _action: "delete" } : row
+      )
+    );
+  };
+
+  const discardChanges = React.useCallback(() => {
+    setHasUnsavedRows(false);
+    Object.values(unsavedChangesRef.current.rowsBeforeChange).forEach((row) => {
+      apiRef.current.updateRows([row]);
+    });
+    unsavedChangesRef.current = {
+      unsavedRows: {},
+      rowsBeforeChange: {},
+      newRows: [],
+      deletedRows: [],
+    };
+    setRows((rows) =>
+      rows
+        .filter((row) => !row.isNew)
+        .map((row) => {
+          // eslint-disable-next-line no-unused-vars
+          const { _action, ...rest } = row;
+          return rest;
+        })
+    );
+  }, [apiRef]);
 
   const getRowClassName = React.useCallback(({ row }) => {
     if (row._action === "delete") return "row--removed";
@@ -255,6 +267,19 @@ export default function BulkEditing() {
     setRows((prevRows) => [...prevRows, newRow]);
     unsavedChangesRef.current.newRows.push(newRow);
     setHasUnsavedRows(true);
+  };
+
+  const handleCellEditStop = () => {
+    autosaveTimeout.current = setTimeout(saveChanges, 5000);
+    console.log("Autosave Triggered");
+  };
+
+  const [snackbarOpen, setSnackbarOpen] = React.useState(false);
+  const handleSnackbarClose = (event, reason) => {
+    if (reason === "clickaway") {
+      return;
+    }
+    setSnackbarOpen(false);
   };
 
   return (
@@ -294,6 +319,8 @@ export default function BulkEditing() {
           processRowUpdate={processRowUpdate}
           editMode="cell"
           getRowId={(row) => row.karyawanId}
+          onCellEditStart={() => clearTimeout(autosaveTimeout.current)}
+          onCellEditStop={handleCellEditStop}
           sx={{
             [`& .${gridClasses.row}.row--removed`]: {
               backgroundColor: (theme) =>
@@ -318,6 +345,15 @@ export default function BulkEditing() {
           getRowClassName={getRowClassName}
         />
       </div>
+      <Snackbar
+        open={snackbarOpen}
+        autoHideDuration={6000}
+        onClose={handleSnackbarClose}
+      >
+        <Alert onClose={handleSnackbarClose} severity="success">
+          Changes saved automatically
+        </Alert>
+      </Snackbar>
     </div>
   );
 }
